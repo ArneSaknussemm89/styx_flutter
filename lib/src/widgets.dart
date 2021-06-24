@@ -69,8 +69,8 @@ class EntityProvider<T extends EntitySystem> extends InheritedWidget {
 
 extension EntityProviderWatcher on BuildContext {
   Widget watchFilteredEntities<T extends EntitySystem>({
-    required EntityWatcherFilterBuilder builder,
     required EntityMatcher matcher,
+    required EntityWatcherFilterBuilder builder,
   }) =>
       EntityWatcher<T>(matcher: matcher, builder: builder);
 
@@ -123,15 +123,22 @@ class _EntityWatcherState<T extends EntitySystem> extends State<EntityWatcher> {
     });
 
     /// Set watcher if null.
-    _listWatcher = ever(ents, refreshList);
+    _listWatcher = ever(ents, (List<Rx<Entity>> list) {
+      refreshList(list);
+    });
   }
 
   @override
   void dispose() {
     _listWatcher?.dispose();
-    _itemWatchers.forEach((key, element) => element.dispose());
-    _itemWatchers.clear();
+    _entities.clear();
+    clearWatchers();
     super.dispose();
+  }
+
+  void clearWatchers() {
+    _itemWatchers.forEach((key, value) => value.dispose());
+    _itemWatchers.clear();
   }
 
   /// This is where we set up all the workers for watching changes to entities in the provided system.
