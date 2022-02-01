@@ -1,13 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:rxdart/rxdart.dart';
 import 'package:styx/styx.dart';
 
 import 'extensions.dart';
 
 // Typedefs for the builders and a filter function.
-typedef EntityWatcherFilterBuilder = Widget Function(BuildContext, EntityMatcher, List<Rx<Entity>>);
-typedef EntityWatcherBuilder = Widget Function(BuildContext, List<Rx<Entity>>);
-typedef EntityWatcherFilter = RxList<Rx<Entity>> Function(BuildContext, List<Rx<Entity>>);
+typedef EntityWatcherFilterBuilder = Widget Function(BuildContext, EntityMatcher, List<Entity>);
+typedef EntityWatcherBuilder = Widget Function(BuildContext, List<Entity>);
+typedef EntityWatcherFilter = List<Entity> Function(BuildContext, List<Entity>);
+
+typedef EntityDataBuilder<T> = Widget Function(T data);
+typedef EntityErrorBuilder = Widget Function(Object? error, StackTrace? stackTrace);
+typedef EntityEmptyBuilder = Widget Function();
 
 /// An inherited widget that can provide entities to a section of the Widget tree.
 ///
@@ -55,7 +61,7 @@ class EntityProvider<T extends EntitySystem> extends InheritedWidget {
     return provider!;
   }
 
-  static RxList<Rx<Entity>> entities<T extends EntitySystem>(BuildContext context) {
+  static BehaviorSubject<List<Entity>> entities<T extends EntitySystem>(BuildContext context) {
     final provider = context.dependOnInheritedWidgetOfExactType<EntityProvider<T>>();
     assert(provider != null, 'Unable to find EntityProvider in this build context');
     return provider!.system.entities;
@@ -74,11 +80,16 @@ extension EntityProviderWatcher on BuildContext {
   }) =>
       EntityWatcher<T>(matcher: matcher, builder: builder);
 
-  Widget watchEntities<T extends EntitySystem>({required EntityWatcherBuilder builder}) {
-    final watchedEntities = entities<T>();
-    return Obx(() {
-      return builder(this, watchedEntities);
-    });
+  Widget watchEntities<T extends EntitySystem>({
+    required EntityWatcherBuilder builder,
+    required EntityErrorBuilder error,
+    required EntityEmptyBuilder loading,
+  }) {
+    return entities<T>().styx(
+      data: (data) => builder(this, data),
+      error: error,
+      loading: loading,
+    );
   }
 }
 
@@ -103,42 +114,24 @@ class EntityWatcher<T extends EntitySystem> extends StatefulWidget {
 }
 
 class _EntityWatcherState<T extends EntitySystem> extends State<EntityWatcher> {
-  Worker? _listWatcher;
-
-  /// Map of entity guid => worker
-  Map<String, Worker> _itemWatchers = {};
+  late StreamSubscription _listWatcher;
 
   /// Map of tracked entities guid => entity.
-  Map<String, Rx<Entity>> _entities = {};
+  Map<String, Entity> _entities = {};
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
 
-    /// Set the entities.
-    final ents = context.entities<T>();
-    ents.forEach((entity) {
-      _entities[entity().guid] = entity;
-      _itemWatchers[entity().guid] = ever(entity, rebuild);
-    });
-
     /// Set watcher if null.
-    _listWatcher = ever(ents, (List<Rx<Entity>> list) {
-      refreshList(list);
-    });
+    _listWatcher = context.entities<T>().listen(refreshList);
   }
 
   @override
   void dispose() {
-    _listWatcher?.dispose();
+    _listWatcher.cancel();
     _entities.clear();
-    clearWatchers();
     super.dispose();
-  }
-
-  void clearWatchers() {
-    _itemWatchers.forEach((key, value) => value.dispose());
-    _itemWatchers.clear();
   }
 
   /// This is where we set up all the workers for watching changes to entities in the provided system.
@@ -153,39 +146,10 @@ class _EntityWatcherState<T extends EntitySystem> extends State<EntityWatcher> {
   /// Changing component values will *not* cause this to rebuild unless using the .update() method on the Rx<Entity>
   ///
   ///
-  void refreshList(List<Rx<Entity>> newEntities) {
-    newEntities.forEach((entity) {
-      if (_entities[entity().guid] == null) {
-        // Add the entity to the list and set up the listener.
-        _entities[entity().guid] = entity;
-        _itemWatchers[entity().guid] = ever<Entity>(entity, rebuild);
-      }
-    });
-
-    // Now we get our current keys, and the keys from the updated list.
-    final currentKeys = Set.from(_entities.keys);
-    final newKeys = newEntities.map((e) => e().guid).toSet();
-
-    // This should gives us keys that were in current that are NOT in the new set. These items are no longer
-    // in the provided system, so we remove it from our list and dispose the watcher.
-    final unusedKeys = currentKeys.difference(newKeys);
-    if (unusedKeys.isNotEmpty) {
-      unusedKeys.forEach((guid) {
-        // Remove entity and dispose watcher.
-        _entities.remove(guid);
-
-        // Dispose watcher and remove
-        _itemWatchers[guid]?.dispose();
-        _itemWatchers.remove(guid);
-      });
-    }
+  void refreshList(List<Entity> value) {
+    _entities = Map.fromIterable(value, key: (entity) => entity.guid);
 
     // Call for rebuild.
-    setState(() {});
-  }
-
-  // If any tracked entity changes, rebuild.
-  void rebuild(Entity entity) {
     setState(() {});
   }
 
@@ -193,7 +157,108 @@ class _EntityWatcherState<T extends EntitySystem> extends State<EntityWatcher> {
   /// we pass those to the builder.
   @override
   Widget build(BuildContext context) {
-    final entities = _entities.values.where((element) => widget.matcher.matches(element)).toList(growable: false);
+    final entities = _entities.values
+        .where(
+          (element) => widget.matcher.matches(element),
+        )
+        .toList(growable: false);
     return widget.builder(context, widget.matcher, entities);
+  }
+}
+
+// A builder where you can pass multiple streams and then a provided merge function
+// will merge the data together into T and then that data is passed to the stream builder.
+class EntityBuilder<T> extends StatefulWidget {
+  const EntityBuilder({
+    Key? key,
+    this.streams = const [],
+    required this.merge,
+    required this.builder,
+  }) : assert(streams.length > 1), super(key: key);
+
+  final List<ValueStream> streams;
+  final Function merge;
+  final AsyncWidgetBuilder<T> builder;
+
+  @override
+  State<EntityBuilder<T>> createState() => _EntityBuilderState<T>();
+}
+
+class _EntityBuilderState<T> extends State<EntityBuilder<T>> {
+  // @TODO: Ability to handle "selects" and only rebuild when selected data changes.
+  T? _selected;
+  T? _initial;
+  late Stream<T> _stream;
+
+  @override
+  void initState() {
+    super.initState();
+    // decide which combiner we need.
+    switch (widget.streams.length) {
+      case 2:
+        _stream = Rx.combineLatest2(
+          widget.streams[0],
+          widget.streams[1],
+          (a, b) => widget.merge.call(a, b),
+        );
+        _initial = widget.merge.call(
+          widget.streams[0].value,
+          widget.streams[1].value,
+        );
+        break;
+      case 3:
+        _stream = Rx.combineLatest3(
+          widget.streams[0],
+          widget.streams[1],
+          widget.streams[2],
+          (a, b, c) => widget.merge.call(a, b, c),
+        );
+        _initial = widget.merge.call(
+          widget.streams[0].value,
+          widget.streams[1].value,
+          widget.streams[2].value,
+        );
+        break;
+      case 4:
+        _stream = Rx.combineLatest4(
+          widget.streams[0],
+          widget.streams[1],
+          widget.streams[2],
+          widget.streams[3],
+          (a, b, c, d) => widget.merge.call(a, b, c, d),
+        );
+        _initial = widget.merge.call(
+          widget.streams[0].value,
+          widget.streams[1].value,
+          widget.streams[2].value,
+          widget.streams[3].value,
+        );
+        break;
+      case 5:
+        _stream = Rx.combineLatest5(
+          widget.streams[0],
+          widget.streams[1],
+          widget.streams[2],
+          widget.streams[3],
+          widget.streams[4],
+          (a, b, c, d, e) => widget.merge.call(a, b, c, d, e),
+        );
+        _initial = widget.merge.call(
+          widget.streams[0].value,
+          widget.streams[1].value,
+          widget.streams[2].value,
+          widget.streams[3].value,
+          widget.streams[4].value,
+        );
+        break;
+      default:
+        _stream = Rx.combineLatest(widget.streams, (list) => widget.merge.call(list));
+        break;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<T>(builder: widget.builder, stream: _stream, initialData: _initial);
   }
 }

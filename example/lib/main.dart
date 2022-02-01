@@ -1,5 +1,5 @@
+import 'package:equatable/equatable.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:styx/styx.dart';
 import 'package:styx_flutter/styx_flutter.dart';
 
@@ -9,12 +9,39 @@ class TodoComponent extends Component {
     this.completed(completed);
   }
 
-  final title = ''.obs;
-  final completed = false.obs;
+  final title = ''.bs;
+  final completed = false.bs;
+  final editing = false.bs;
+
+  @override
+  void onRemoved() {
+    title.close();
+    completed.close();
+    editing.close();
+  }
 
   void complete() {
-    completed.toggle();
+    completed(!completed());
   }
+
+  void edit() {
+    editing(!editing());
+  }
+}
+
+class TodoViewModel extends Equatable {
+  TodoViewModel({required this.title, required this.completed});
+
+  final String title;
+  final bool completed;
+
+  @override
+  List<Object> get props => [title, completed];
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'completed': completed,
+      };
 }
 
 final system = EntitySystem();
@@ -74,26 +101,48 @@ class TodoListingPage extends StatelessWidget {
                   return ListView.builder(
                     itemCount: todos.length,
                     itemBuilder: (context, index) {
-                      return todos[index].styx((data) {
-                        return Dismissible(
-                          key: ValueKey(data),
-                          confirmDismiss: (direction) async {
-                            if (data.get<TodoComponent>().completed()) {
-                              data.destroy();
-                              return true;
-                            }
-                            return false;
-                          },
-                          child: CheckboxListTile(
-                            title: Text(
-                              data.get<TodoComponent>().title(),
-                              style: Theme.of(context).textTheme.headline5,
-                            ),
-                            value: data.get<TodoComponent>().completed(),
-                            onChanged: (checked) => data.get<TodoComponent>().completed.value = checked!,
+                      final todo = todos[index];
+
+                      return Dismissible(
+                        key: ValueKey(todo.guid),
+                        confirmDismiss: (direction) async {
+                          if (todo.get<TodoComponent>().completed()) {
+                            todo.destroy();
+                            return true;
+                          }
+                          return false;
+                        },
+                        child: EntityBuilder<TodoViewModel>(
+                          key: ValueKey(todo.guid),
+                          streams: [
+                            todo.get<TodoComponent>().title,
+                            todo.get<TodoComponent>().completed,
+                          ],
+                          merge: (title, completed) => TodoViewModel(
+                            title: title,
+                            completed: completed,
                           ),
-                        );
-                      });
+                          builder: (context, snapshot) {
+                            return snapshot.when(
+                              data: (model) => CheckboxListTile(
+                                value: model.completed,
+                                title: Text(model.title),
+                                onChanged: (checked) => todo.get<TodoComponent>().completed(checked),
+                              ),
+                              error: (error, trace) => CheckboxListTile(
+                                value: false,
+                                title: Text(
+                                  error
+                                      .toString()
+                                      .substring(0, error.toString().length > 144 ? 144 : error.toString().length),
+                                ),
+                                onChanged: (checked) {},
+                              ),
+                              loading: () => CircularProgressIndicator.adaptive(),
+                            );
+                          },
+                        ),
+                      );
                     },
                   );
                 },

@@ -1,4 +1,3 @@
-import 'package:get/get.dart';
 import 'package:styx/styx.dart';
 
 import '../data/components.dart';
@@ -11,7 +10,7 @@ class BookSystem extends EntitySystem {
   int _iterator = 0;
 
   @override
-  Rx<Entity> create() {
+  Entity create() {
     var entity = super.create();
     entity += BookComponent(id: _iterator);
     // Increment iterator

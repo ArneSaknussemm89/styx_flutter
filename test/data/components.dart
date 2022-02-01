@@ -1,5 +1,4 @@
 import 'package:equatable/equatable.dart';
-import 'package:get/get.dart';
 import 'package:styx/styx.dart';
 
 /// Component representing a book.
@@ -7,36 +6,40 @@ class BookComponent extends Component with SerializableComponent, EquatableMixin
   BookComponent({
     String title = '',
     String isbn = '',
-    String guid = '',
     bool booked = false,
     required int id,
   }) {
     this.title(title);
     this.isbn(isbn);
-    this.guid(guid);
     this.booked(booked);
     this.id(id);
   }
 
-  final title = ''.obs;
-  final isbn = ''.obs;
-  final guid = ''.obs;
-  final booked = false.obs;
-  final id = 0.obs;
+  final title = ''.bs;
+  final isbn = ''.bs;
+  final booked = false.bs;
+  final id = 0.bs;
+
+  @override
+  void onRemoved() {
+    title.close();
+    isbn.close();
+    booked.close();
+    id.close();
+  }
 
   @override
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       "title": title(),
       "isbn": isbn(),
-      "guid": guid(),
       "booked": booked(),
       "id": id(),
     };
   }
 
   @override
-  List<Object?> get props => [title(), isbn(), guid(), booked(), id()];
+  List<Object?> get props => [title(), isbn(), booked(), id()];
 }
 
 /// A component for an entity representing a book on hold.
@@ -46,8 +49,14 @@ class BookingComponent extends Component with SerializableComponent, EquatableMi
     this.bookGuid(bookGuid);
   }
 
-  final guid = ''.obs;
-  final bookGuid = ''.obs;
+  final guid = ''.bs;
+  final bookGuid = ''.bs;
+
+  @override
+  void onRemoved() {
+    guid.close();
+    bookGuid.close();
+  }
 
   @override
   Map<String, dynamic> toJson() {

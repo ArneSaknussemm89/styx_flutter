@@ -17,6 +17,7 @@ void main() {
     book.get<BookComponent>().title(bookTitle);
 
     await tester.pumpWidget(TestApp(system: booksSystem));
+    await tester.pumpAndSettle();
 
     final textFinder = find.text(bookTitle);
 
@@ -38,16 +39,13 @@ void main() {
     final textFinderBooking = find.byIcon(Icons.bookmark);
 
     /// Set guid
-    book.update((val) {
-      val!.get<BookComponent>()
-        ..guid.value = '12345467890'
-        ..title.value = bookTitle;
-    });
+    book.get<BookComponent>().title(bookTitle);
 
     /// Set booking reference
-    booking += BookingComponent(bookGuid: book.get<BookComponent>().guid.value);
+    booking += BookingComponent(bookGuid: book.guid);
 
     await tester.pumpWidget(TestApp2(booksSystem: booksSystem, bookingSystem: bookingSystem));
+    await tester.pumpAndSettle();
 
     // Expect the book and the bookmark.
     expect(textFinder, findsOneWidget);
@@ -55,27 +53,21 @@ void main() {
 
     // New book with different title
     var book2 = booksSystem.create();
-    book2.update((val) {
-      val!.get<BookComponent>()
-        ..guid.value = '1122334455'
-        ..title.value = bookTitle3;
-    });
+    book2.get<BookComponent>().title(bookTitle3);
 
     // Now change title and see if it updated.
-    book.update((val) {
-      val!.get<BookComponent>().title(bookTitle2);
-    });
+    book.get<BookComponent>().title(bookTitle2);
 
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     /// Expect to find both books.
     expect(textFinder2, findsOneWidget);
     expect(textFinder3, findsOneWidget);
 
     /// Now remove the book and make sure it's disappeared from the watcher.
-    book().destroy();
+    book.destroy();
 
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     /// Book should not be in the list anymore.
     expect(textFinder2, findsNothing);
@@ -106,12 +98,17 @@ class TestApp extends StatelessWidget {
 class TesterWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    final entities = context.entities<BookSystem>();
-    return Column(
-      children: [
-        ...entities.map((entity) => Text(entity.get<BookComponent>().title())),
-      ],
-    );
+    return context.entities<BookSystem>().styx(
+          data: (books) {
+            if (books.isEmpty) {
+              return Text('No books');
+            }
+
+            return books.first.get<BookComponent>().title.styxData((data) => Text(data));
+          },
+          loading: () => Center(child: CircularProgressIndicator.adaptive()),
+          error: (error, stackTrace) => Center(child: Text('Error: $error')),
+        );
   }
 }
 
@@ -150,15 +147,18 @@ class TesterWidget2 extends StatelessWidget {
             ...books.map((book) {
               return Column(
                 children: [
-                  book.get<BookComponent>().title.styx((value) {
-                    return Text(value);
-                  }),
+                  book.get<BookComponent>().title.styx(
+                        data: (value) {
+                          return Text(value);
+                        },
+                        loading: () => CircularProgressIndicator.adaptive(),
+                        error: (error, stackTrace) => Text(error.toString()),
+                      ),
                   context.watchFilteredEntities<BookingSystem>(
                     matcher: EntityMatcher(all: Set.of([BookingComponent])),
                     builder: (context, matcher, bookings) {
                       final booked = bookings
-                          .where((booking) =>
-                              booking.get<BookingComponent>().bookGuid() == book.get<BookComponent>().guid())
+                          .where((booking) => booking.get<BookingComponent>().bookGuid() == book.guid)
                           .isNotEmpty;
                       if (booked) return Icon(Icons.bookmark);
                       return const SizedBox.shrink();
